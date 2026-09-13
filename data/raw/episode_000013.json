@@ -1,0 +1,18 @@
+{
+  "episode_index": 13,
+  "total_frames": 127,
+  "fps": 50,
+  "duration_seconds": 2.54,
+  "task_name": "pick_and_place_around_obstacle",
+  "state_dim": 30,
+  "action_dim": 4,
+  "has_collision": false,
+  "final_success": false,
+  "min_dist_gripper_to_obj": 0.0043,
+  "final_dist_obj_to_goal": 0.0624,
+  "desired_goal": [
+    0.19162322580814362,
+    0.09641692787408829,
+    0.019999999552965164
+  ]
+}
