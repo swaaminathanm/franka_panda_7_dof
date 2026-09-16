@@ -1,4 +1,7 @@
 import numpy as np
+import torch
+
+from env_utils import extract_state
 
 
 class BaseController:
@@ -33,11 +36,12 @@ class ManualController(BaseController):
         """Resets the persistent gripper state to open."""
         self.gripper_state = 1.0
 
-    def get_action(self, key, action_dim=4):
+    def get_action(self, key, obs=None, action_dim=4):
         """Translates keyboard keycode into a continuous action array, status label, reset flag, save flag, and record toggle flag.
 
         Args:
             key (int): OpenCV waitKey ASCII keycode.
+            obs (dict, optional): Observation dict (unused in manual mode).
             action_dim (int): Action dimension (3 for XYZ only, 4 for XYZ + gripper).
 
         Returns:
@@ -95,10 +99,57 @@ class ManualController(BaseController):
 
 
 class AgentController(BaseController):
-    """Placeholder for autonomous policies (e.g. Flow Matching, DAgger)."""
+    """Abstract controller for autonomous policy rollouts."""
 
-    def __init__(self, policy_model=None):
-        self.policy_model = policy_model
+    def __init__(self, policy=None):
+        self.policy = policy
 
     def get_action(self, obs, key=None, action_dim=4):
-        raise NotImplementedError("Agent controller is not implemented yet.")
+        raise NotImplementedError("Subclasses must implement get_action().")
+
+
+class FlowMatchingController(AgentController):
+    """Autonomous Flow Matching policy controller using Receding Horizon Control (RHC)."""
+
+    def __init__(self, policy, k_exec: int = 4, ode_steps: int = 10):
+        super().__init__(policy=policy)
+        self.k_exec = k_exec
+        self.ode_steps = ode_steps
+        self.action_buffer = []
+
+    def reset_buffer(self):
+        """Clears the Receding Horizon action buffer upon episode reset."""
+        self.action_buffer = []
+
+    def get_action(self, obs, key=None, action_dim=4):
+        """Generates policy actions using Receding Horizon Control (RHC).
+
+        Args:
+            obs (dict): Current Gym observation dictionary.
+            key (int, optional): OpenCV waitKey code (used for ESC detection).
+            action_dim (int): Action dimension.
+
+        Returns:
+            tuple[np.ndarray, str, bool, bool, bool]: (action, label, reset_requested, save_requested, record_toggle_requested)
+        """
+        reset_requested = False
+        save_requested = False
+        record_toggle_requested = False
+
+        # If buffer is empty, query policy for new 16-step action chunk
+        if len(self.action_buffer) == 0:
+            state_vec = extract_state(obs)
+            device = next(self.policy.parameters()).device
+            state_tensor = torch.from_numpy(state_vec).unsqueeze(0).to(device)
+
+            with torch.no_grad():
+                chunk = self.policy.sample_actions(state_tensor, num_steps=self.ode_steps)
+                chunk = chunk.squeeze(0).cpu().numpy()  # (16, 4)
+
+            num_exec = min(self.k_exec, chunk.shape[0])
+            self.action_buffer = list(chunk[:num_exec])
+
+        action = self.action_buffer.pop(0)
+        label = "AGENT (Flow)"
+
+        return action, label, reset_requested, save_requested, record_toggle_requested

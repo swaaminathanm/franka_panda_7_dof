@@ -107,6 +107,7 @@ def render_multi_camera_dashboard(
     rec_steps=None,
     is_recording=False,
     wait_ms=20,
+    show_window=True,
 ):
     """Renders a 2x2 multi-camera grid with telemetry overlays and captures keyboard input."""
     if target_pos is None:
@@ -215,10 +216,13 @@ def render_multi_camera_dashboard(
         cv2.LINE_AA,
     )
 
-    cv2.namedWindow('Multi-Camera Dashboard', cv2.WINDOW_AUTOSIZE)
-    cv2.imshow('Multi-Camera Dashboard', dashboard)
-    key = cv2.waitKey(wait_ms) & 0xFF
-    return key
+    key = -1
+    if show_window:
+        cv2.namedWindow('Multi-Camera Dashboard', cv2.WINDOW_AUTOSIZE)
+        cv2.imshow('Multi-Camera Dashboard', dashboard)
+        key = cv2.waitKey(wait_ms) & 0xFF
+
+    return key, dashboard
 
 
 def close_dashboard():

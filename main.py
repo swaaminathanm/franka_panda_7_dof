@@ -1,73 +1,24 @@
 import argparse
-
-import gymnasium as gym
+import os
+import sys
+import time
 import numpy as np
+import torch
+import gymnasium as gym
 import panda_gym
 
-from controllers import ManualController
+from controllers import ManualController, FlowMatchingController
 from dashboard import close_dashboard, render_multi_camera_dashboard
 from recorder import EpisodeRecorder
-
-
-def create_obstacle(p):
-    wall_thickness = 0.02  # 2 cm thick along X
-    wall_width = 0.28  # 28 cm wide in the center (table is 70 cm wide)
-    wall_height = 0.24  # 24 cm tall (slightly higher than the EE default resting pos at z = 0.20 m)
-    table_z = 0.0
-
-    visual_shape = p.createVisualShape(
-        shapeType=p.GEOM_BOX,
-        halfExtents=[wall_thickness / 2.0, wall_width / 2.0, wall_height / 2.0],
-        rgbaColor=[0.2, 0.4, 0.85, 1.0],  # Blue partition wall
-    )
-    collision_shape = p.createCollisionShape(
-        shapeType=p.GEOM_BOX,
-        halfExtents=[wall_thickness / 2.0, wall_width / 2.0, wall_height / 2.0],
-    )
-    obstacle_id = p.createMultiBody(
-        baseMass=0,  # Static / immovable
-        baseCollisionShapeIndex=collision_shape,
-        baseVisualShapeIndex=visual_shape,
-        basePosition=[-0.02, 0.0, table_z + wall_height / 2.0],
-    )
-    return obstacle_id
-
-
-def set_goal_color(p, rgba_color=None):
-    """Set the goal target color (default: vibrant red)."""
-    if rgba_color is None:
-        rgba_color = [1.0, 0.15, 0.15, 1.0]
-    for i in range(p.getNumBodies()):
-        v_data = p.getVisualShapeData(i)
-        if v_data and len(v_data) > 0:
-            rgba = v_data[0][7]
-            # In panda-gym, the goal body has initial alpha < 0.5
-            if rgba[3] < 0.5:
-                p.changeVisualShape(i, -1, rgbaColor=rgba_color)
-
-
-def setup_block_obj_goal_pos(env):
-    task = env.unwrapped.task
-    task.obj_range_low = np.array([-0.25, -0.10, 0.0])
-    task.obj_range_high = np.array([-0.15, 0.10, 0.0])
-    task.goal_range_low = np.array([0.15, -0.10, 0.0])
-    task.goal_range_high = np.array([0.25, 0.10, 0.0])
-    return task
-
-
-def setup_grasp_physics(p, sim):
-    """Enhances contact friction on gripper finger pads for firm, slip-free grasping."""
-    robot_id = sim._bodies_idx.get("panda", 0)
-    # Apply rubber-pad dynamics ONLY to the two gripper fingers (links 9 and 10)
-    for finger_link in (9, 10):
-        p.changeDynamics(
-            robot_id,
-            finger_link,
-            lateralFriction=3.0,
-            spinningFriction=0.1,
-            rollingFriction=0.1,
-            frictionAnchor=1,
-        )
+from env_utils import (
+    create_obstacle,
+    set_goal_color,
+    setup_block_obj_goal_pos,
+    setup_grasp_physics,
+    setup_scene_physics,
+    extract_state,
+    make_franka_env,
+)
 
 
 def main():
@@ -76,19 +27,31 @@ def main():
         "--mode",
         choices=["MANUAL", "AGENT"],
         default="MANUAL",
-        help="Operating mode: MANUAL (teleoperation, unlimited steps) or AGENT",
+        help="Operating mode: MANUAL (keyboard teleoperation) or AGENT (Flow Matching policy)",
     )
     parser.add_argument(
         "--max-steps",
         type=int,
         default=500,
-        help="Max episode steps for AGENT mode (default: 200). Ignored in MANUAL mode.",
+        help="Max episode steps (default: 500).",
     )
     parser.add_argument(
         "--save-dir",
         type=str,
         default="data/raw",
         help="Directory to save demonstration episodes (default: data/raw)",
+    )
+    parser.add_argument(
+        "--checkpoint",
+        type=str,
+        default="checkpoints/flow_policy_best.pt",
+        help="Policy checkpoint for AGENT mode (default: checkpoints/flow_policy_best.pt)",
+    )
+    parser.add_argument(
+        "--k-exec",
+        type=int,
+        default=4,
+        help="Receding Horizon Control execution steps for AGENT mode (default: 4)",
     )
     parser.add_argument(
         "--record-idle",
@@ -98,60 +61,90 @@ def main():
     args = parser.parse_args()
     mode = args.mode.upper()
 
-    # In AGENT mode: Explicitly pass max_episode_steps to gym.make (enforced by TimeLimit wrapper)
-    # In MANUAL mode: Unwrap the environment to completely disable the TimeLimit wrapper
+    # Create Gym Environment
     if mode == "MANUAL":
         env = gym.make("PandaPickAndPlace-v3", render_mode="rgb_array").unwrapped
         max_steps = None
     else:
         max_steps = args.max_steps
-        env = gym.make(
-            "PandaPickAndPlace-v3", render_mode="rgb_array", max_episode_steps=max_steps
-        )
+        env = gym.make("PandaPickAndPlace-v3", render_mode="rgb_array", max_episode_steps=max_steps)
 
     setup_block_obj_goal_pos(env)
-
     obs, info = env.reset()
-    print("Environment reset successful!")
-    print("Initial observation keys:", list(obs.keys()))
-    print("Action space:", env.action_space)
 
     sim = env.unwrapped.sim
     p = sim.physics_client
 
-    obstacle_id = create_obstacle(p)
-    set_goal_color(p)
-    setup_grasp_physics(p, sim)
-
-    controller = ManualController(step_size=0.4, gripper_speed=1.0)
-    recorder = EpisodeRecorder(save_dir=args.save_dir, fps=50)
+    obstacle_id = setup_scene_physics(env)
     action_dim = env.action_space.shape[0]
+
+    # Setup Controller based on Mode
+    if mode == "MANUAL":
+        controller = ManualController(step_size=0.4, gripper_speed=1.0)
+    else:
+        from policy.flow_matching import FlowMatchingPolicy
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        policy = FlowMatchingPolicy(
+            action_dim=4,
+            state_dim=30,
+            pred_horizon=16,
+            cond_dim=256,
+            stats_path="data/lerobot/meta/stats.json",
+        ).to(device)
+
+        if os.path.exists(args.checkpoint):
+            ckpt = torch.load(args.checkpoint, map_location=device)
+            policy.load_state_dict(ckpt["model_state_dict"])
+            print(f"[AGENT Mode] Loaded trained policy from: {args.checkpoint} (Epoch {ckpt.get('epoch', '?')})")
+        else:
+            print(f"[AGENT Mode] Warning: Checkpoint {args.checkpoint} not found! Running un-trained policy.")
+        policy.eval()
+
+        controller = FlowMatchingController(policy=policy, k_exec=args.k_exec)
+
+    recorder = EpisodeRecorder(save_dir=args.save_dir, fps=50)
 
     print("\n" + "=" * 60)
     print(f" FRANKA PANDA SIMULATION — MODE: {mode}")
     if mode == "MANUAL":
         print(' Step termination: DISABLED (Unlimited steps, reset with "R")')
-    print(
-        f" Demonstrations saved in : {args.save_dir}/ (Existing: {recorder.saved_count})"
-    )
+        print(f" Demonstrations saved in : {args.save_dir}/ (Existing: {recorder.saved_count})")
+    else:
+        print(f" Max Steps per Episode: {max_steps}")
+        print(f" Execution Horizon    : {args.k_exec} steps (Receding Horizon Control)")
     print("=" * 60)
-    print(' Focus on the "Multi-Camera Dashboard" window to operate:')
-    print("   W / S       : Move End-Effector Forward (+X) / Backward (-X)")
-    print("   A / D       : Move End-Effector Left (+Y) / Right (-Y)")
-    print("   E / Q       : Move End-Effector Up (+Z) / Down (-Z)")
-    print("   O / C       : Open / Close Gripper")
-    print("   SPACE       : Hold position (zero action)")
-    print("   B / T       : Start / Pause Recording (Toggle)")
-    print("   ENTER       : Save demonstration episode")
-    print("   R           : Reset / Discard current episode")
-    print("   ESC         : Exit simulation")
-    print("=" * 60 + "\n")
+
+    if mode == "MANUAL":
+        print(' Focus on the "Multi-Camera Dashboard" window to operate:')
+        print("   W / S       : Move End-Effector Forward (+X) / Backward (-X)")
+        print("   A / D       : Move End-Effector Left (+Y) / Right (-Y)")
+        print("   E / Q       : Move End-Effector Up (+Z) / Down (-Z)")
+        print("   O / C       : Open / Close Gripper")
+        print("   SPACE       : Hold position (zero action)")
+        print("   B / T       : Start / Pause Recording (Toggle)")
+        print("   ENTER       : Save demonstration episode")
+        print("   R           : Reset / Discard current episode")
+        print("   ESC         : Exit simulation")
+        print("=" * 60 + "\n")
 
     episode = 1
     step = 0
-    action_label = "IDLE"
+    action_label = "IDLE" if mode == "MANUAL" else "AGENT (Flow)"
     is_success = False
     is_recording = False
+
+    def reset_episode_state():
+        nonlocal obs, info, obstacle_id, episode, step, is_success, is_recording
+        obs, info = env.reset()
+        obstacle_id = setup_scene_physics(env)
+        if hasattr(controller, "reset_gripper"):
+            controller.reset_gripper()
+        if hasattr(controller, "reset_buffer"):
+            controller.reset_buffer()
+        episode += 1
+        step = 0
+        is_success = False
+        is_recording = False
 
     try:
         while True:
@@ -162,7 +155,7 @@ def main():
             # Gripper opening width (in meters)
             gripper_width = env.unwrapped.robot.get_fingers_width()
 
-            key = render_multi_camera_dashboard(
+            key, _ = render_multi_camera_dashboard(
                 p,
                 sim=sim,
                 step=step,
@@ -183,13 +176,14 @@ def main():
                 print("Simulation stopped by user.")
                 break
 
+            # Unified Controller Call
             (
                 action,
                 action_label,
                 reset_requested,
                 save_requested,
                 record_toggle_requested,
-            ) = controller.get_action(key, action_dim=action_dim)
+            ) = controller.get_action(key=key, obs=obs, action_dim=action_dim)
 
             if record_toggle_requested:
                 is_recording = not is_recording
@@ -208,14 +202,7 @@ def main():
                     )
                     if saved_path:
                         print(f"Demonstration saved to: {saved_path}")
-                obs, info = env.reset()
-                set_goal_color(p)
-                setup_grasp_physics(p, sim)
-                controller.reset_gripper()
-                episode += 1
-                step = 0
-                is_success = False
-                is_recording = False
+                reset_episode_state()
                 continue
 
             if reset_requested:
@@ -224,14 +211,7 @@ def main():
                         f"Manual reset triggered at step {step}. Discarded {recorder.current_length} buffered frames."
                     )
                 recorder.clear_buffer()
-                obs, info = env.reset()
-                set_goal_color(p)
-                setup_grasp_physics(p, sim)
-                controller.reset_gripper()
-                episode += 1
-                step = 0
-                is_success = False
-                is_recording = False
+                reset_episode_state()
                 continue
 
             prev_obs = obs
@@ -239,12 +219,10 @@ def main():
             step += 1
             is_success = bool(info.get("is_success", False))
 
-            # In MANUAL mode: Disable step-limit / timeout termination
             if mode == "MANUAL":
                 truncated = False
 
-            # Buffer step transition into recorder
-            # In MANUAL mode, record only when recording has been started by user (is_recording is True); other modes False
+            # Buffer step transition into recorder if in MANUAL recording mode
             should_record = is_recording if mode == "MANUAL" else False
             if mode == "MANUAL" and not args.record_idle and action_label == "IDLE":
                 should_record = False
@@ -269,7 +247,7 @@ def main():
                 print(
                     f"Episode {episode} finished [{status}] at step {step}. Resetting..."
                 )
-                if is_success:
+                if mode == "MANUAL" and is_success:
                     saved_path = recorder.save_episode(
                         task_name="pick_and_place_around_obstacle"
                     )
@@ -278,15 +256,7 @@ def main():
                 else:
                     recorder.clear_buffer()
 
-                obs, info = env.reset()
-                set_goal_color(p)
-                setup_grasp_physics(p, sim)
-                controller.reset_gripper()
-                episode += 1
-                step = 0
-                is_success = False
-                is_recording = False
-
+                reset_episode_state()
 
     except KeyboardInterrupt:
         print("Simulation stopped by user.")

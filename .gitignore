@@ -24,3 +24,9 @@ dist/
 # OS files
 Thumbs.db
 .DS_Store
+
+# Data, checkpoints, and videos
+data/
+checkpoints/
+videos/
+

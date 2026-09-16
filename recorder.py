@@ -1,54 +1,8 @@
 import json
 import os
-
 import numpy as np
 
-
-def extract_state(obs):
-    """Extracts an enriched 30-dimensional state vector from the Gymnasium observation dict.
-
-    Feature Breakdown:
-      1. observation (19-d):
-         - End-effector position (3) & linear velocity (3)
-         - Gripper fingers width (1)
-         - Object position (3), rotation roll-pitch-yaw (3), linear vel (3), angular vel (3)
-      2. desired_goal (3-d):
-         - Target goal position (x, y, z)
-      3. rel_gripper_to_obj (3-d):
-         - 3D relative displacement vector from gripper EE to object: (obj_pos - ee_pos)
-      4. rel_obj_to_goal (3-d):
-         - 3D relative displacement vector from object to target goal: (goal_pos - obj_pos)
-      5. dist_gripper_to_obj (1-d):
-         - Euclidean scalar distance between gripper EE and object
-      6. dist_obj_to_goal (1-d):
-         - Euclidean scalar distance between object and target goal
-
-    Total Dimension: 19 + 3 + 3 + 3 + 1 + 1 = 30
-    """
-    observation = np.asarray(obs["observation"], dtype=np.float32)
-    desired_goal = np.asarray(obs["desired_goal"], dtype=np.float32)
-    achieved_goal = np.asarray(obs["achieved_goal"], dtype=np.float32)
-
-    gripper_pos = observation[:3]
-    obj_pos = achieved_goal
-    goal_pos = desired_goal
-
-    # Relative 3D displacement vectors (direct guides for XYZ delta actions)
-    rel_gripper_to_obj = (obj_pos - gripper_pos).astype(np.float32)
-    rel_obj_to_goal = (goal_pos - obj_pos).astype(np.float32)
-
-    # Scalar Euclidean distances (direct indicators for phase transitions)
-    dist_gripper_to_obj = np.array([np.linalg.norm(rel_gripper_to_obj)], dtype=np.float32)
-    dist_obj_to_goal = np.array([np.linalg.norm(rel_obj_to_goal)], dtype=np.float32)
-
-    return np.concatenate([
-        observation,
-        desired_goal,
-        rel_gripper_to_obj,
-        rel_obj_to_goal,
-        dist_gripper_to_obj,
-        dist_obj_to_goal,
-    ], axis=0).astype(np.float32)
+from env_utils import extract_state
 
 
 class EpisodeRecorder:
