@@ -8,7 +8,7 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
 
-sys.path.append(os.path.abspath(os.path.dirname(__file__)))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from policy.dataset import FrankaLeRobotDataset
 from policy.flow_matching import FlowMatchingPolicy
@@ -65,9 +65,9 @@ def train(args):
     start_time = time.time()
 
     print(f"\n[Train] Starting Flow Matching Policy Training...")
-    print(f"        Total Epochs:  {args.epochs}")
-    print(f"        Batch Size:    {args.batch_size}")
-    print(f"        Learning Rate: {args.lr}")
+    print(f"        Total Epochs:   {args.epochs}")
+    print(f"        Batch Size:     {args.batch_size}")
+    print(f"        Learning Rate:  {args.lr}")
     print(f"        Save Directory: {args.save_dir}\n")
 
     # 6. Main Training Loop

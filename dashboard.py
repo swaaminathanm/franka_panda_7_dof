@@ -129,37 +129,37 @@ def render_multi_camera_dashboard(
     cv2.rectangle(dashboard, (0, 0), (dashboard.shape[1], header_h), (25, 25, 25), -1)
 
     # Mode Badge
-    cv2.putText(dashboard, f"[{mode}]", (14, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 0), 2, cv2.LINE_AA)
+    cv2.putText(dashboard, f"[{mode}]", (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 0), 2, cv2.LINE_AA)
 
     # Action Indicator
     action_color = (0, 255, 255) if action_label != "IDLE" else (160, 160, 160)
-    cv2.putText(dashboard, f"Act: {action_label}", (130, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.60, action_color, 2, cv2.LINE_AA)
+    cv2.putText(dashboard, f"Act: {action_label}", (115, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.45, action_color, 1, cv2.LINE_AA)
 
     # Gripper Width
     if gripper_width is not None:
         grip_state = "OPEN" if gripper_width > 0.03 else "CLOSED"
-        cv2.putText(dashboard, f"Grip: {gripper_width * 100:.1f}cm ({grip_state})", (290, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (220, 220, 220), 1, cv2.LINE_AA)
+        cv2.putText(dashboard, f"Grip: {gripper_width * 100:.1f}cm ({grip_state})", (505, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (220, 220, 220), 1, cv2.LINE_AA)
 
     # Collision Warning
     obs_text = "HIT!" if is_collision else "SAFE"
     obs_color = (0, 0, 255) if is_collision else (0, 220, 0)
-    cv2.putText(dashboard, f"Obstacle: {obs_text}", (490, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.50, obs_color, 2, cv2.LINE_AA)
+    cv2.putText(dashboard, f"Obstacle: {obs_text}", (675, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.48, obs_color, 2, cv2.LINE_AA)
 
     # Demos Saved & Recording Telemetry
     if demos_saved is not None:
-        cv2.putText(dashboard, f"Demos: {demos_saved}", (640, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 120, 255), 2, cv2.LINE_AA)
+        cv2.putText(dashboard, f"Demos: {demos_saved}", (810, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (255, 120, 255), 1, cv2.LINE_AA)
 
     rec_count = rec_steps if rec_steps is not None else 0
     if is_recording:
         # Pulsing / bright red dot with active frame count
-        cv2.circle(dashboard, (776, 23), 6, (0, 0, 255), -1, cv2.LINE_AA)
-        cv2.putText(dashboard, f"REC: {rec_count}", (790, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2, cv2.LINE_AA)
+        cv2.circle(dashboard, (826, 23), 6, (0, 0, 255), -1, cv2.LINE_AA)
+        cv2.putText(dashboard, f"REC: {rec_count}", (840, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (0, 0, 255), 2, cv2.LINE_AA)
     elif rec_count > 0:
         # Paused recording state
-        cv2.putText(dashboard, f"PAUSED ({rec_count})", (766, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (0, 215, 255), 2, cv2.LINE_AA)
+        cv2.putText(dashboard, f"PAUSED ({rec_count})", (820, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 215, 255), 2, cv2.LINE_AA)
     elif mode == "MANUAL":
         # Standby cue for the operator
-        cv2.putText(dashboard, "REC: OFF [B]", (770, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (140, 140, 140), 1, cv2.LINE_AA)
+        cv2.putText(dashboard, "REC: OFF [B]", (820, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (140, 140, 140), 1, cv2.LINE_AA)
 
     # Bottom Footer Bar
     if step is not None:

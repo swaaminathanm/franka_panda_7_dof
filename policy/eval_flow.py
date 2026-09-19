@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 import torch
 
-sys.path.append(os.path.abspath(os.path.dirname(__file__)))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from env_utils import make_franka_env, setup_scene_physics
 from controllers import FlowMatchingController

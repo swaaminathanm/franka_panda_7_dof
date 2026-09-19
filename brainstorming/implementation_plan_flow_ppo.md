@@ -1,6 +1,6 @@
 # Implementation Plan: Residual Flow-PPO with Rich Rewards
 
-This document outlines the architecture, reward design, policy definitions, training loop, and evaluation pipeline for **Residual Flow-PPO**.
+This document outlines the architecture, reward design, policy definitions, training loop, and evaluation pipeline for **Residual Flow-PPO** with **State-Dependent Exploration Noise**.
 
 ---
 
@@ -123,7 +123,7 @@ from policy.embeddings import StateEncoder
 
 
 class ResidualFlowMatchingActor(nn.Module):
-    """Trainable PPO Residual Actor using FlowMatching1DCNN backbone architecture."""
+    """Trainable PPO Residual Actor using FlowMatching1DCNN backbone + State-Dependent Log-Std Head."""
 
     def __init__(self, action_dim: int = 4, state_dim: int = 30, cond_dim: int = 256, pred_horizon: int = 16):
         super().__init__()
@@ -137,11 +137,11 @@ class ResidualFlowMatchingActor(nn.Module):
             cond_dim=cond_dim,
         )
 
-        # 2. Trainable log std matrix for PPO Gaussian exploration over 16 steps
-        self.log_std = nn.Parameter(torch.zeros(pred_horizon, action_dim))
+        # 2. State-dependent log_std head (predicts adaptive noise std based on state)
+        self.log_std_head = nn.Linear(cond_dim, pred_horizon * action_dim)
 
     def forward(self, a_base: torch.Tensor, state: torch.Tensor):
-        """Predicts 16-step residual action chunk delta_a given base trajectory and state."""
+        """Predicts 16-step residual action chunk delta_a and state-dependent std given base trajectory and state."""
         t_eval = torch.ones(state.shape[0], device=state.device)
 
         # FlowMatching1DCNN takes (a_base, state, t) and returns (Batch, 4, 16)
@@ -150,10 +150,15 @@ class ResidualFlowMatchingActor(nn.Module):
         # Transpose from (Batch, 4, 16) -> (Batch, 16, 4)
         mu = res_features.transpose(1, 2)
 
-        # Bound residual offsets to safe range [-0.2, +0.2]
+        # Bound residual mean offsets to safe range [-0.2, +0.2]
         mu = torch.tanh(mu) * 0.2
 
-        std = torch.exp(self.log_std)
+        # State-dependent log_std prediction from condition embedding
+        cond = self.cnn_backbone.cond_embedding(state, t_eval)
+        log_std = self.log_std_head(cond).view(-1, self.pred_horizon, self.action_dim)
+        log_std = torch.clamp(log_std, min=-20.0, max=2.0)
+        std = torch.exp(log_std)
+
         return mu, std
 
 
@@ -193,8 +198,8 @@ class ResidualFlowPolicy(nn.Module):
         with torch.no_grad():
             a_base = self.flow_policy.sample_actions(state_tensor, num_steps=10)  # (1, 16, 4)
 
-        # Step 2: Query Residual Actor for residual mean offset chunk and std
-        mu, std = self.residual_actor(a_base, state_tensor)  # (1, 16, 4), (16, 4)
+        # Step 2: Query Residual Actor for residual mean offset chunk and state-dependent std
+        mu, std = self.residual_actor(a_base, state_tensor)  # (1, 16, 4), (1, 16, 4)
         dist = Normal(mu, std)
 
         if deterministic:
@@ -230,9 +235,9 @@ import torch.optim as optim
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
 from env_utils import make_franka_env, setup_scene_physics, extract_state
-from reward_utils import RichRewardFrankaWrapper
+from ppo.reward_utils import RichRewardFrankaWrapper
 from policy.flow_matching import FlowMatchingPolicy
-from policy.residual_ppo import ResidualFlowMatchingActor, ValueCritic, ResidualFlowPolicy
+from ppo.residual_ppo import ResidualFlowMatchingActor, ValueCritic, ResidualFlowPolicy
 
 
 def compute_gae(rewards, values, dones, next_value, gamma=0.99, lam=0.95):
