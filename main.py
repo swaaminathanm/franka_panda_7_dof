@@ -14,7 +14,6 @@ from env_utils import (
     create_obstacle,
     set_goal_color,
     setup_block_obj_goal_pos,
-    setup_grasp_physics,
     setup_scene_physics,
     extract_state,
     make_franka_env,
@@ -58,6 +57,16 @@ def main():
         action="store_true",
         help="Record idle frames in MANUAL mode (when no key is pressed). Default: False.",
     )
+    parser.add_argument(
+        "--corners-only",
+        action="store_true",
+        help="Restrict goal target strictly to table corners. Default: False.",
+    )
+    parser.add_argument(
+        "--near-obstacle",
+        action="store_true",
+        help="Place block close to obstacle wall (X: -0.12..-0.09). Default: False.",
+    )
     args = parser.parse_args()
     mode = args.mode.upper()
 
@@ -69,7 +78,7 @@ def main():
         max_steps = args.max_steps
         env = gym.make("PandaPickAndPlace-v3", render_mode="rgb_array", max_episode_steps=max_steps)
 
-    setup_block_obj_goal_pos(env)
+    setup_block_obj_goal_pos(env, corners_only=args.corners_only, near_obstacle=args.near_obstacle)
     obs, info = env.reset()
 
     sim = env.unwrapped.sim
@@ -86,10 +95,10 @@ def main():
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         policy = FlowMatchingPolicy(
             action_dim=4,
-            state_dim=30,
+            state_dim=34,
             pred_horizon=16,
             cond_dim=256,
-            stats_path="data/lerobot/meta/stats.json",
+            stats_path="data/lerobot_all/meta/stats.json",
         ).to(device)
 
         if os.path.exists(args.checkpoint):

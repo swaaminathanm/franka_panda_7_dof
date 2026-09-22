@@ -21,7 +21,7 @@ class FlowMatchingPolicy(nn.Module):
     def __init__(
         self,
         action_dim: int = 4,
-        state_dim: int = 30,
+        state_dim: int = 34,
         pred_horizon: int = 16,
         cond_dim: int = 256,
         stats_path: str = "data/lerobot/meta/stats.json",
@@ -47,14 +47,14 @@ class FlowMatchingPolicy(nn.Module):
         """Computes OT-CFM Flow Matching MSE Training Loss.
 
         Args:
-            state: Raw observation state tensor of shape (Batch_Size, 30)
+            state: Raw observation state tensor of shape (Batch_Size, 30) or (Batch_Size, 34)
             action: Raw ground truth action chunk tensor of shape (Batch_Size, 16, 4)
 
         Returns:
             Scalar MSE loss tensor.
         """
         # 1. Normalize state and target action trajectory to [-1, 1]
-        norm_state = self.normalizer.normalize_state(state)  # (Batch_Size, 30)
+        norm_state = self.normalizer.normalize_state(state)  # (Batch_Size, 34)
         x_1 = self.normalizer.normalize_action(action)  # (Batch_Size, 16, 4)
 
         # Ensure x_1 has shape (Batch_Size, 4, 16) for 1D CNN layout
@@ -90,7 +90,7 @@ class FlowMatchingPolicy(nn.Module):
         """Inference ODE Euler solver generating action trajectory chunks.
 
         Args:
-            state: Raw observation state of shape (30,) or (Batch_Size, 30)
+            state: Raw observation state of shape (30,), (34,), (Batch, 30), or (Batch, 34)
             num_steps: Number of Euler integration steps (default: 10)
 
         Returns:
@@ -99,14 +99,15 @@ class FlowMatchingPolicy(nn.Module):
         # Ensure batch dimension
         is_single = False
         if state.dim() == 1:
-            state = state.unsqueeze(0)  # (1, 30)
+            state = state.unsqueeze(0)
             is_single = True
 
         batch_size = state.shape[0]
-        device = state.device
+        device = next(self.model.parameters()).device
+        state = state.to(device)
 
         # 1. Normalize observation state
-        norm_state = self.normalizer.normalize_state(state)  # (Batch_Size, 30)
+        norm_state = self.normalizer.normalize_state(state)
 
         # 2. Sample initial noise x_0 ~ N(0, I)
         x_t = torch.randn(batch_size, self.action_dim, self.pred_horizon, device=device)  # (Batch_Size, 4, 16)
@@ -140,10 +141,10 @@ if __name__ == "__main__":
     # Unit tests for FlowMatchingPolicy
     pred_horizon = 16
 
-    policy = FlowMatchingPolicy(action_dim=4, state_dim=30, pred_horizon=pred_horizon, cond_dim=256)
+    policy = FlowMatchingPolicy(action_dim=4, state_dim=34, pred_horizon=pred_horizon, cond_dim=256)
 
     batch_size = 4
-    dummy_state = torch.randn(batch_size, 30)
+    dummy_state = torch.randn(batch_size, 34)
     dummy_action = torch.randn(batch_size, pred_horizon, 4)
 
     # 1. Test Training Loss Computation
@@ -157,8 +158,8 @@ if __name__ == "__main__":
     assert sampled_actions.shape == (batch_size, 16, 4), f"Expected (4, 16, 4), got {sampled_actions.shape}"
     assert not torch.isnan(sampled_actions).any(), "Sampled actions contain NaN!"
 
-    # 3. Test Single Vector Input (30,)
-    single_state = torch.randn(30)
+    # 3. Test Single Vector Input (34,)
+    single_state = torch.randn(34)
     single_actions = policy.sample_actions(single_state, num_steps=10)
     print(f"Single State Sampled Actions shape: {single_actions.shape}")
     assert single_actions.shape == (16, 4), f"Expected (16, 4), got {single_actions.shape}"

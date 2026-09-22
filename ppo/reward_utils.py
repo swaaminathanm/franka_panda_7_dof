@@ -3,12 +3,7 @@ import gymnasium as gym
 
 
 class RichRewardFrankaWrapper(gym.Wrapper):
-    """Gymnasium Wrapper augmenting PandaPickAndPlace-v3 with progress & obstacle clearance rewards.
-
-    Fixes:
-      1. Hover-Farming: Progress-based reward (reward actual movement toward goal).
-      2. Edge-Grasping: Centered grasp threshold (< 2.2cm).
-      3. Obstacle Wall Lock: Adds Vertical Wall Clearance & Escape Upward reward (forces +dz lift to clear 24cm wall).
+    """Gymnasium Wrapper augmenting PandaPickAndPlace-v3 with progress, alignment & re-grasp recovery.
     """
 
     def __init__(self, env, obstacle_id: int = None):
@@ -18,9 +13,14 @@ class RichRewardFrankaWrapper(gym.Wrapper):
         self.lift_bonus_given = False
         self.wall_x = -0.02
         self.wall_height = 0.24  # 24 cm tall partition wall
+        self.required_clearance = 0.285  # 28.5 cm EE height required to clear 24cm wall cleanly
 
     def set_obstacle_id(self, obstacle_id: int):
         self.obstacle_id = obstacle_id
+
+    def set_wall_height(self, wall_height: float):
+        self.wall_height = float(wall_height)
+        self.required_clearance = float(wall_height + 0.045)
 
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
@@ -31,7 +31,7 @@ class RichRewardFrankaWrapper(gym.Wrapper):
         return obs, info
 
     def compute_rich_reward(self, obs, action, info) -> float:
-        """Compute progress-driven reward signal with wall clearance & escape vectors."""
+        """Compute progress-driven reward signal with re-grasp attraction & wall clearance."""
         sim = self.env.unwrapped.sim
         bullet_p = sim.physics_client
 
@@ -39,7 +39,10 @@ class RichRewardFrankaWrapper(gym.Wrapper):
         obj_pos = obs["achieved_goal"][:3]
         goal_pos = obs["desired_goal"][:3]
 
+        # 3D relative positions
         dist_ee_obj = float(np.linalg.norm(ee_pos - obj_pos))
+        dist_xy_ee_obj = float(np.linalg.norm(ee_pos[:2] - obj_pos[:2]))
+        dist_z_ee_obj = float(abs(ee_pos[2] - obj_pos[2]))
         dist_obj_goal = float(np.linalg.norm(obj_pos - goal_pos))
 
         if self.prev_dist_obj_goal is None:
@@ -47,55 +50,79 @@ class RichRewardFrankaWrapper(gym.Wrapper):
 
         reward = 0.0
 
-        # 1. Reaching: -dist(gripper, object)
-        reward -= dist_ee_obj
+        # Physical Contact Check via PyBullet
+        robot_id = sim._bodies_idx.get("panda", 0)
+        obj_id = sim._bodies_idx.get("object", 1)
+        contacts_obj = bullet_p.getContactPoints(bodyA=robot_id, bodyB=obj_id)
+        has_physical_contact = len(contacts_obj) > 0
 
-        is_obs_lifted = obj_pos[2] > 0.02
-        is_obs_grasped = (dist_ee_obj < 0.022) and is_obs_lifted
+        # Perception & Grasp State Classification
+        is_obs_grasped = (dist_ee_obj < 0.035) and has_physical_contact
+        is_obs_lifted = is_obs_grasped and (obj_pos[2] > 0.03)
+        is_gripper_aligned_low = (dist_xy_ee_obj < 0.035) and (dist_z_ee_obj < 0.025)
         is_success = bool(info.get("is_success", False)) or (dist_obj_goal < 0.05)
+        is_out_of_bounds = (
+            abs(ee_pos[0]) > 0.32 or
+            abs(ee_pos[1]) > 0.30 or
+            ee_pos[2] > 0.42 or
+            ee_pos[2] < 0.00
+        )
+        
+        # 1. Reaching & Initial Alignment Phase
+        if not is_obs_grasped:
+            reward -= 5.0 * dist_ee_obj  # Pull EE toward block
+            # Encourage closing fingers when aligned low over block
+            if is_gripper_aligned_low and action[3] < -0.1:
+                reward += 3.0
 
-        # 2. One-time Lifting Bonus (+15.0)
-        if is_obs_grasped and not self.lift_bonus_given:
-            reward += 15.0
-            self.lift_bonus_given = True
+        # 2. Carrying & Lifting Phase
+        if is_obs_lifted:
+            if not self.lift_bonus_given:
+                reward += 15.0  # Awarded ONCE per episode
+                self.lift_bonus_given = True
 
-        # 3. Goal Progress Reward (Reward actual movement TOWARD goal)
-        goal_progress = self.prev_dist_obj_goal - dist_obj_goal
+            # Penalize relaxing grip / opening fingers while carrying
+            if action[3] >= -0.1:
+                reward -= 6.0
+
+        # 3. Goal Progress Reward & Direction Alignment (Symmetric +25 / -25)
         if is_obs_grasped:
+            goal_progress = self.prev_dist_obj_goal - dist_obj_goal
             if goal_progress > 0:
-                reward += 20.0 * goal_progress  # Reward moving closer to goal
+                reward += 25.0 * goal_progress  # Reward moving closer
             else:
-                reward -= 0.5  # Penalize hovering / standing still
-
-            reward -= 1.0 * dist_obj_goal
+                reward -= 25.0 * abs(goal_progress)  # Symmetric penalty for moving away
 
         self.prev_dist_obj_goal = dist_obj_goal
 
-        # 4. Obstacle Wall Clearance & Vertical Lift Shaping
-        dist_to_wall_x = abs(ee_pos[0] - self.wall_x)
-        if dist_to_wall_x < 0.08:  # Near partition wall region
-            if ee_pos[2] >= self.wall_height:
-                reward += 3.0  # Reward clearing top of wall (z >= 24cm)
-            else:
-                reward -= 5.0 * (self.wall_height - ee_pos[2])  # Penalize low altitude near wall
+        # 4. Out-of-Bounds / High-Air Wandering Penalty
+        if is_out_of_bounds:
+            reward -= 15.0
 
-        # 5. Obstacle Collision & Escape Reward
+        # 5. Wall-Crossing Altitude Shaping (enforced across X in [-0.15, 0.15])
+        if is_obs_grasped and (-0.15 < obj_pos[0] < 0.15):
+            clearance_gap = self.required_clearance - ee_pos[2]
+            if clearance_gap > 0:
+                reward -= 10.0 * clearance_gap  # Smooth penalty for flying below 28.5cm
+            else:
+                reward += 2.0  # Continuous safe clearance bonus
+
+        # 6. Obstacle Wall Collision Penalty (Pure PyBullet Contact Detection)
+        is_wall_collision = False
         if self.obstacle_id is not None:
             contacts = bullet_p.getContactPoints(bodyA=self.obstacle_id)
             if len(contacts) > 0:
-                reward -= 2.0  # Capped step penalty for wall contact
-                # Reward UPWARD action vector (+dz) to force lifting out of wall contact
-                if action[2] > 0:
-                    reward += 5.0 * action[2]  # Reward lifting UP to escape wall contact
-                else:
-                    reward -= 2.0  # Penalize trying to push horizontally/downward into wall
+                is_wall_collision = True
 
-        # 6. Task Success Bonus (+150.0)
+        if is_wall_collision:
+            reward -= 20.0  # Strict wall collision penalty
+
+        # 7. Task Success Bonus (+150.0)
         if is_success:
             reward += 150.0
 
-        # 7. Action Effort Penalty
-        reward -= 0.01 * np.sum(action ** 2)
+        # 8. Per-Step Time Penalty (encourages minimal step completion)
+        reward -= 0.5
 
         return float(reward)
 

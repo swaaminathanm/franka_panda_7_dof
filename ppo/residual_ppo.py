@@ -13,7 +13,7 @@ from policy.embeddings import StateEncoder
 class ResidualFlowMatchingActor(nn.Module):
     """Trainable PPO Residual Actor using FlowMatching1DCNN backbone architecture."""
 
-    def __init__(self, action_dim: int = 4, state_dim: int = 30, cond_dim: int = 256, pred_horizon: int = 16):
+    def __init__(self, action_dim: int = 4, state_dim: int = 34, cond_dim: int = 256, pred_horizon: int = 16):
         super().__init__()
         self.pred_horizon = pred_horizon
         self.action_dim = action_dim
@@ -35,7 +35,7 @@ class ResidualFlowMatchingActor(nn.Module):
 
         Args:
             a_base: Base action trajectory chunk of shape (Batch_Size, T, 4)
-            state: Observation state of shape (Batch_Size, 30)
+            state: Observation state of shape (Batch_Size, 34)
 
         Returns:
             mu: Predicted mean of residual action chunk of shape (Batch_Size, T, 4)
@@ -59,10 +59,28 @@ class ResidualFlowMatchingActor(nn.Module):
         return mu, std
 
 
+    def update_noise_std(self, current_ep: int, total_episodes: int, init_log_std: float = -2.3, min_log_std: float = -3.0, decay_ratio: float = 0.85):
+        """
+        Linearly decays exploration log_std across the first decay_ratio (85%) of total training episodes.
+
+        Args:
+            current_ep: Current episode index (1-indexed)
+            total_episodes: Total training episode count
+            init_log_std: Initial log_std (-2.3 corresponds to std ~ 0.10)
+            min_log_std: Minimum log_std floor (-3.0 corresponds to std ~ 0.05)
+            decay_ratio: Fraction of total episodes to decay across (default: 0.85)
+        """
+        decay_horizon = max(1, int(decay_ratio * total_episodes))
+        progress = min(1.0, max(0.0, current_ep / decay_horizon))
+        target_log_std = init_log_std + progress * (min_log_std - init_log_std)
+        with torch.no_grad():
+            self.log_std.fill_(target_log_std)
+
+
 class ValueCritic(nn.Module):
     """Trainable State Value Critic V(s)."""
 
-    def __init__(self, state_dim: int = 30, cond_dim: int = 256):
+    def __init__(self, state_dim: int = 34, cond_dim: int = 256):
         super().__init__()
         self.state_encoder = StateEncoder(state_dim=state_dim, output_dim=cond_dim)
         self.value_head = nn.Linear(cond_dim, 1)
@@ -88,6 +106,9 @@ class ResidualFlowPolicy(nn.Module):
 
     def get_action(self, state: torch.Tensor, deterministic: bool = False, k_exec: int = 16):
         """Generates 16-step combined action chunk and PPO telemetry."""
+        device = next(self.actor.parameters()).device
+        state = state.to(device)
+
         # 1. Compute base action using expert frozen policy
         with torch.no_grad():
             a_base = self.flow_policy.sample_actions(state, num_steps=10)  # (1, 16, 4)

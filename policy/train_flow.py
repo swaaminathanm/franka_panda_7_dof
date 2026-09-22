@@ -46,11 +46,16 @@ def train(args):
     # 3. Initialize Flow Matching Policy
     policy = FlowMatchingPolicy(
         action_dim=4,
-        state_dim=30,
+        state_dim=34,
         pred_horizon=args.pred_horizon,
         cond_dim=args.cond_dim,
         stats_path=os.path.join(args.data_dir, "meta", "stats.json"),
     ).to(device)
+
+    if args.checkpoint and os.path.exists(args.checkpoint):
+        ckpt = torch.load(args.checkpoint, map_location=device)
+        policy.load_state_dict(ckpt["model_state_dict"])
+        print(f"[Train] Fine-tuning from pre-trained base flow checkpoint: {args.checkpoint}")
 
     # 4. Initialize Optimizer & Cosine Annealing Learning Rate Scheduler
     optimizer = AdamW(policy.parameters(), lr=args.lr, weight_decay=1e-6)
@@ -58,7 +63,11 @@ def train(args):
 
     # 5. Checkpoint directory setup
     os.makedirs(args.save_dir, exist_ok=True)
-    best_checkpoint_path = os.path.join(args.save_dir, "flow_policy_best.pt")
+    if args.out_checkpoint:
+        best_checkpoint_path = args.out_checkpoint
+        os.makedirs(os.path.dirname(best_checkpoint_path) or ".", exist_ok=True)
+    else:
+        best_checkpoint_path = os.path.join(args.save_dir, "flow_policy_best.pt")
     latest_checkpoint_path = os.path.join(args.save_dir, "flow_policy_latest.pt")
 
     best_loss = float("inf")
@@ -77,7 +86,7 @@ def train(args):
         num_batches = 0
 
         for batch in dataloader:
-            state = batch["state"].to(device)    # (Batch_Size, 30)
+            state = batch["state"].to(device)    # (Batch_Size, 34)
             action = batch["action"].to(device)  # (Batch_Size, 16, 4)
 
             optimizer.zero_grad()
@@ -144,12 +153,14 @@ def train(args):
 
 def main():
     parser = argparse.ArgumentParser(description="Train Flow Matching Policy for Franka Panda 7-DoF")
-    parser.add_argument("--data-dir", type=str, default="data/lerobot", help="Path to LeRobot dataset directory")
-    parser.add_argument("--epochs", type=int, default=50, help="Number of training epochs (default: 50)")
+    parser.add_argument("--data-dir", type=str, default="data/lerobot_all", help="Path to LeRobot dataset directory")
+    parser.add_argument("--epochs", type=int, default=150, help="Number of training epochs (default: 150)")
     parser.add_argument("--batch-size", type=int, default=64, help="Mini-batch size (default: 64)")
-    parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate (default: 3e-4)")
+    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate (default: 1e-4)")
     parser.add_argument("--pred-horizon", type=int, default=16, help="Action prediction horizon (default: 16)")
     parser.add_argument("--cond-dim", type=int, default=256, help="Condition embedding dimension (default: 256)")
+    parser.add_argument("--checkpoint", type=str, default=None, help="Pretrained base model checkpoint to fine-tune from")
+    parser.add_argument("--out-checkpoint", type=str, default="checkpoints/flow_policy_combined_best_2.pt", help="Custom output path to save best fine-tuned model checkpoint")
     parser.add_argument("--save-dir", type=str, default="checkpoints", help="Directory to save checkpoints")
     parser.add_argument("--log-interval", type=int, default=5, help="Epoch logging interval (default: 5)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed (default: 42)")

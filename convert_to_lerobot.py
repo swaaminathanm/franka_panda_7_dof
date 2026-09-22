@@ -16,11 +16,11 @@ import numpy as np
 
 
 def get_lerobot_features():
-    """Defines the feature specification schema conforming to LeRobot standards."""
+    """Defines the feature specification schema conforming to LeRobot standards (34D wall-aware state)."""
     return {
         "observation.state": {
             "dtype": "float32",
-            "shape": (30,),
+            "shape": (34,),
             "names": [
                 # End-effector 3D position & linear velocity (6)
                 "ee_x", "ee_y", "ee_z", "ee_vx", "ee_vy", "ee_vz",
@@ -37,6 +37,9 @@ def get_lerobot_features():
                 # Scalar Euclidean distances (2)
                 "dist_gripper_to_obj",
                 "dist_obj_to_goal",
+                # Obstacle wall relative displacement & scalar distance (4)
+                "rel_gripper_to_wall_x", "rel_gripper_to_wall_y", "rel_gripper_to_wall_z",
+                "dist_gripper_to_wall",
             ],
         },
         "action": {
@@ -62,6 +65,8 @@ def convert_raw_to_lerobot(
         print(f"Error: Missing required packages: {e}")
         print("Please install them with: pip install lerobot torch pyarrow")
         return
+
+    from env_utils import append_wall_features_to_30d
 
     npz_files = sorted(glob.glob(os.path.join(raw_dir, "episode_*.npz")))
     if not npz_files:
@@ -100,13 +105,15 @@ def convert_raw_to_lerobot(
             print(f"  [Skip] {os.path.basename(npz_path)} (unsuccessful, final_success=False)")
             continue
 
-        states = data["states"]    # (T, 30)
+        states = data["states"]    # (T, 30) or (T, 34)
         actions = data["actions"]  # (T, 4)
         num_frames = len(states)
 
         for t in range(num_frames):
+            state_tensor = torch.from_numpy(states[t]).float()
+            state_34 = append_wall_features_to_30d(state_tensor)
             frame = {
-                "observation.state": torch.from_numpy(states[t]).float(),
+                "observation.state": state_34,
                 "action": torch.from_numpy(actions[t]).float(),
                 "task": task_description,
             }

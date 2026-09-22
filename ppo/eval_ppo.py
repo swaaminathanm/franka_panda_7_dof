@@ -25,49 +25,75 @@ def evaluate_ppo_policy(args):
         os.makedirs(args.video_dir, exist_ok=True)
         print(f"[PPO Eval] Video recording enabled. Saving to: {args.video_dir}/")
 
-    # 1. Load Pre-trained Base Flow Matching Policy
+    # 1. Load Pre-trained Base Flow Matching Policy & Auto-detect matching dataset stats
+    if not os.path.exists(args.flow_checkpoint):
+        raise FileNotFoundError(
+            f"[PPO Eval Error] Base flow checkpoint '{args.flow_checkpoint}' was not found on disk! "
+            f"Please verify the filename path or complete base model training before running evaluation."
+        )
+
+    stats_dir = args.data_dir
+    flow_ckpt_data = torch.load(args.flow_checkpoint, map_location=device)
+    ckpt_args = flow_ckpt_data.get("args", {})
+    if isinstance(ckpt_args, dict) and "data_dir" in ckpt_args:
+        ckpt_data_dir = ckpt_args["data_dir"]
+        if not os.path.exists(ckpt_data_dir):
+            raise FileNotFoundError(
+                f"[PPO Eval Error] Base flow checkpoint '{args.flow_checkpoint}' was trained on dataset directory '{ckpt_data_dir}', "
+                f"but this dataset directory was not found on disk! Please ensure '{ckpt_data_dir}' exists."
+            )
+        stats_dir = ckpt_data_dir
+        print(f"[PPO Eval] Auto-detected matching dataset directory from base checkpoint: {stats_dir}")
+
+    stats_path = os.path.join(stats_dir, "meta", "stats.json")
+    if not os.path.exists(stats_path):
+        raise FileNotFoundError(
+            f"[PPO Eval Error] Normalization stats file not found at '{stats_path}'! "
+            f"Cannot evaluate policy without valid dataset statistics."
+        )
+    print(f"[PPO Eval] Using normalization stats: {stats_path}")
+
     flow_policy = FlowMatchingPolicy(
         action_dim=4,
-        state_dim=30,
+        state_dim=34,
         pred_horizon=args.pred_horizon,
         cond_dim=args.cond_dim,
-        stats_path=os.path.join(args.data_dir, "meta", "stats.json"),
+        stats_path=stats_path,
     ).to(device)
 
-    if os.path.exists(args.flow_checkpoint):
-        ckpt = torch.load(args.flow_checkpoint, map_location=device)
-        flow_policy.load_state_dict(ckpt["model_state_dict"])
-        print(f"[PPO Eval] Loaded base Flow Matching policy from: {args.flow_checkpoint}")
-    else:
-        print(f"[PPO Eval] Warning: Base flow checkpoint {args.flow_checkpoint} not found!")
+    flow_policy.load_state_dict(flow_ckpt_data["model_state_dict"])
+    print(f"[PPO Eval] Loaded base Flow Matching policy from: {args.flow_checkpoint}")
 
     # 2. Setup Residual Actor & Critic
     residual_actor = ResidualFlowMatchingActor(
         action_dim=4,
-        state_dim=30,
+        state_dim=34,
         cond_dim=args.cond_dim,
         pred_horizon=args.pred_horizon,
     ).to(device)
 
-    critic = ValueCritic(state_dim=30, cond_dim=args.cond_dim).to(device)
+    critic = ValueCritic(state_dim=34, cond_dim=args.cond_dim).to(device)
 
-    if os.path.exists(args.ppo_checkpoint):
-        ppo_ckpt = torch.load(args.ppo_checkpoint, map_location=device)
-        if "actor" in ppo_ckpt:
-            residual_actor.load_state_dict(ppo_ckpt["actor"])
-            if "critic" in ppo_ckpt:
-                critic.load_state_dict(ppo_ckpt["critic"])
-        else:
-            residual_actor.load_state_dict(ppo_ckpt)
-        print(f"[PPO Eval] Loaded Residual PPO checkpoint from: {args.ppo_checkpoint}")
+    if not os.path.exists(args.ppo_checkpoint):
+        raise FileNotFoundError(
+            f"[PPO Eval Error] Specified Residual PPO checkpoint '{args.ppo_checkpoint}' was not found on disk! "
+            f"Please verify the filename path or complete PPO training before running evaluation."
+        )
+
+    ppo_ckpt = torch.load(args.ppo_checkpoint, map_location=device)
+    if "actor" in ppo_ckpt:
+        residual_actor.load_state_dict(ppo_ckpt["actor"])
+        if "critic" in ppo_ckpt:
+            critic.load_state_dict(ppo_ckpt["critic"])
     else:
-        print(f"[PPO Eval] Warning: Residual PPO checkpoint {args.ppo_checkpoint} not found! Running un-trained residual policy.")
+        residual_actor.load_state_dict(ppo_ckpt)
+    print(f"[PPO Eval] Loaded Residual PPO checkpoint from: {args.ppo_checkpoint}")
 
     residual_policy = ResidualFlowPolicy(flow_policy, residual_actor, critic)
     residual_policy.eval()
 
     # 3. Create Gym Environment with Rich Reward Wrapper
-    base_env = make_franka_env(max_episode_steps=args.max_steps)
+    base_env = make_franka_env(max_episode_steps=args.max_steps, corners_only=args.corners_only, near_obstacle=args.near_obstacle)
     env = RichRewardFrankaWrapper(base_env)
 
     sim = env.unwrapped.sim
@@ -122,8 +148,11 @@ def evaluate_ppo_policy(args):
             ep_reward += reward
             obs = next_obs
 
-            contacts = bullet_p.getContactPoints(bodyA=obstacle_id)
-            is_collision = len(contacts) > 0
+            contacts_a = bullet_p.getContactPoints(bodyA=obstacle_id)
+            contacts_b = bullet_p.getContactPoints(bodyB=obstacle_id)
+            ee_pos = obs["observation"][:3]
+            geom_collision = abs(ee_pos[0] - (-0.02)) < 0.035 and abs(ee_pos[1]) < 0.16 and ee_pos[2] < 0.26
+            is_collision = len(contacts_a) > 0 or len(contacts_b) > 0 or geom_collision
             gripper_width = env.unwrapped.robot.get_fingers_width()
 
             obj_pos = obs["achieved_goal"][:3]
@@ -188,11 +217,13 @@ def main():
     parser = argparse.ArgumentParser(description="Evaluate Residual Flow-PPO Policy in Franka Panda Gym Sim")
     parser.add_argument("--ppo-checkpoint", type=str, default="checkpoints/residual_ppo_best.pt", help="Path to residual PPO model checkpoint")
     parser.add_argument("--flow-checkpoint", type=str, default="checkpoints/flow_policy_best.pt", help="Path to base Flow Matching checkpoint")
-    parser.add_argument("--data-dir", type=str, default="data/lerobot", help="Path to dataset metadata")
+    parser.add_argument("--data-dir", type=str, default="data/lerobot_all", help="Path to dataset metadata")
     parser.add_argument("--episodes", type=int, default=10, help="Number of evaluation episodes (default: 10)")
     parser.add_argument("--max-steps", type=int, default=300, help="Max steps per episode (default: 300)")
     parser.add_argument("--pred-horizon", type=int, default=16, help="Prediction horizon (default: 16)")
     parser.add_argument("--k-exec", type=int, default=4, help="Execution horizon steps per chunk (default: 4)")
+    parser.add_argument("--corners-only", action="store_true", help="Restrict goal target strictly to table corners")
+    parser.add_argument("--near-obstacle", action="store_true", help="Place pickup block right next to the obstacle wall (X = -0.07..-0.04m)")
     parser.add_argument("--cond-dim", type=int, default=256, help="Condition embedding dimension (default: 256)")
     parser.add_argument("--render", action="store_true", help="Render PyBullet visual window & multi-camera dashboard")
     parser.add_argument("--save-video", action="store_true", help="Save MP4 video recordings of evaluation rollouts")

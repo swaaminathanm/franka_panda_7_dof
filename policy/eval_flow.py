@@ -23,21 +23,44 @@ def evaluate_policy(args):
         os.makedirs(args.video_dir, exist_ok=True)
         print(f"[Eval] Video recording enabled. Saving to: {args.video_dir}/")
 
-    # 1. Load Trained Policy Checkpoint
+    # 1. Load Trained Policy Checkpoint & Auto-detect matching dataset stats
+    if not os.path.exists(args.checkpoint):
+        raise FileNotFoundError(
+            f"[Eval Error] Specified checkpoint file '{args.checkpoint}' was not found on disk! "
+            f"Please verify the filename path or complete training before running evaluation."
+        )
+
+    stats_dir = args.data_dir
+    checkpoint_data = torch.load(args.checkpoint, map_location=device)
+    ckpt_args = checkpoint_data.get("args", {})
+    if isinstance(ckpt_args, dict) and "data_dir" in ckpt_args:
+        ckpt_data_dir = ckpt_args["data_dir"]
+        if not os.path.exists(ckpt_data_dir):
+            raise FileNotFoundError(
+                f"[Eval Error] Checkpoint '{args.checkpoint}' was trained on dataset directory '{ckpt_data_dir}', "
+                f"but this dataset directory was not found on disk! Please ensure '{ckpt_data_dir}' exists."
+            )
+        stats_dir = ckpt_data_dir
+        print(f"[Eval] Auto-detected matching dataset directory from checkpoint: {stats_dir}")
+
+    stats_path = os.path.join(stats_dir, "meta", "stats.json")
+    if not os.path.exists(stats_path):
+        raise FileNotFoundError(
+            f"[Eval Error] Normalization stats file not found at '{stats_path}'! "
+            f"Cannot evaluate policy without valid dataset statistics."
+        )
+    print(f"[Eval] Using normalization stats: {stats_path}")
+
     policy = FlowMatchingPolicy(
         action_dim=4,
-        state_dim=30,
+        state_dim=34,
         pred_horizon=args.pred_horizon,
         cond_dim=args.cond_dim,
-        stats_path=os.path.join(args.data_dir, "meta", "stats.json"),
+        stats_path=stats_path,
     ).to(device)
 
-    if os.path.exists(args.checkpoint):
-        checkpoint = torch.load(args.checkpoint, map_location=device)
-        policy.load_state_dict(checkpoint["model_state_dict"])
-        print(f"[Eval] Loaded checkpoint from: {args.checkpoint} (Epoch {checkpoint.get('epoch', '?')})")
-    else:
-        print(f"[Eval] Warning: Checkpoint {args.checkpoint} not found! Running un-trained policy for test.")
+    policy.load_state_dict(checkpoint_data["model_state_dict"])
+    print(f"[Eval] Loaded checkpoint from: {args.checkpoint} (Epoch {checkpoint_data.get('epoch', '?')})")
 
     policy.eval()
 
@@ -49,7 +72,7 @@ def evaluate_policy(args):
     )
 
     # 3. Create Gymnasium Panda Environment
-    env = make_franka_env(max_episode_steps=args.max_steps)
+    env = make_franka_env(max_episode_steps=args.max_steps, corners_only=args.corners_only, near_obstacle=args.near_obstacle)
 
     # Access underlying PyBullet physics client
     sim = env.unwrapped.sim
@@ -89,9 +112,11 @@ def evaluate_policy(args):
             obs, reward, terminated, truncated, info = env.step(action)
             ep_step += 1
 
-            # Check contact with obstacle & gripper width
-            contacts = bullet_p.getContactPoints(bodyA=obstacle_id)
-            is_collision = len(contacts) > 0
+            contacts_a = bullet_p.getContactPoints(bodyA=obstacle_id)
+            contacts_b = bullet_p.getContactPoints(bodyB=obstacle_id)
+            ee_pos = obs["observation"][:3]
+            geom_collision = abs(ee_pos[0] - (-0.02)) < 0.035 and abs(ee_pos[1]) < 0.16 and ee_pos[2] < 0.26
+            is_collision = len(contacts_a) > 0 or len(contacts_b) > 0 or geom_collision
             gripper_width = env.unwrapped.robot.get_fingers_width()
 
             # Check distance to goal for success determination
@@ -153,11 +178,13 @@ def evaluate_policy(args):
 def main():
     parser = argparse.ArgumentParser(description="Evaluate Flow Matching Policy in Franka Panda Gym Sim")
     parser.add_argument("--checkpoint", type=str, default="checkpoints/flow_policy_best.pt", help="Path to model checkpoint")
-    parser.add_argument("--data-dir", type=str, default="data/lerobot", help="Path to LeRobot dataset")
+    parser.add_argument("--data-dir", type=str, default="data/lerobot_all", help="Path to LeRobot dataset")
     parser.add_argument("--episodes", type=int, default=10, help="Number of evaluation episodes (default: 10)")
     parser.add_argument("--max-steps", type=int, default=300, help="Max steps per episode (default: 300)")
     parser.add_argument("--pred-horizon", type=int, default=16, help="Action prediction chunk length (default: 16)")
     parser.add_argument("--k-exec", type=int, default=4, help="Receding Horizon execution steps (default: 4)")
+    parser.add_argument("--corners-only", action="store_true", help="Restrict goal target strictly to table corners")
+    parser.add_argument("--near-obstacle", action="store_true", help="Place pickup block right next to the obstacle wall (X = -0.07..-0.04m)")
     parser.add_argument("--ode-steps", type=int, default=10, help="Number of Euler ODE inference steps (default: 10)")
     parser.add_argument("--cond-dim", type=int, default=256, help="Condition embedding dimension (default: 256)")
     parser.add_argument("--render", action="store_true", help="Render PyBullet visual window & camera dashboard")

@@ -116,14 +116,14 @@ class FlowMatching1DCNN(nn.Module):
 
     Predicts velocity field v_theta(x_t, t, c) of shape (Batch_Size, 4, T_pred) given:
       - x_t: Noisy action trajectory of shape (Batch_Size, 4, T_pred)
-      - state: Observation state of shape (Batch_Size, 30)
+      - state: Observation state of shape (Batch_Size, 34)
       - t: Continuous ODE time step scalar in [0, 1] of shape (Batch_Size,) or (Batch_Size, 1)
     """
 
     def __init__(
         self,
         action_dim: int = 4,
-        state_dim: int = 30,
+        state_dim: int = 34,
         cond_dim: int = 256,
         channels: list = [128, 256, 128],
         kernel_size: int = 5,
@@ -159,7 +159,7 @@ class FlowMatching1DCNN(nn.Module):
 
         Args:
             x_t: Noisy action sample of shape (Batch_Size, 4, T_pred) or (Batch_Size, T_pred, 4)
-            state: Observation state of shape (Batch_Size, 30)
+            state: Observation state of shape (Batch_Size, 34)
             t: Flow step scalar in [0, 1] of shape (Batch_Size,) or (Batch_Size, 1)
 
         Returns:
@@ -186,11 +186,11 @@ class FlowMatching1DCNN(nn.Module):
 
 if __name__ == "__main__":
     # Unit tests and shape assertions for 1D CNN FiLM Backbone
-    model = FlowMatching1DCNN(action_dim=4, state_dim=30, cond_dim=256)
+    model = FlowMatching1DCNN(action_dim=4, state_dim=34, cond_dim=256)
 
     batch_size = 4
     dummy_xt = torch.randn(batch_size, 4, 16)  # Noisy action sample
-    dummy_state = torch.randn(batch_size, 30)  # 30D observation state
+    dummy_state = torch.randn(batch_size, 34)  # 34D observation state
     dummy_t = torch.rand(batch_size, 1)  # Flow time step scalar in [0, 1]
 
     velocity_pred = model(dummy_xt, dummy_state, dummy_t)

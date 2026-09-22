@@ -42,12 +42,12 @@ class SinusoidalPositionalEncoding(nn.Module):
 
 
 class StateEncoder(nn.Module):
-    """Encoder mapping 30D observation states to 256D condition embeddings.
+    """Encoder mapping 34D observation states to 256D condition embeddings.
 
     Uses a 3-layer MLP with Mish activation functions.
     """
 
-    def __init__(self, state_dim: int = 30, hidden_dim: int = 256, output_dim: int = 256):
+    def __init__(self, state_dim: int = 34, hidden_dim: int = 256, output_dim: int = 256):
         super().__init__()
         self.state_dim = state_dim
         self.output_dim = output_dim
@@ -64,7 +64,7 @@ class StateEncoder(nn.Module):
         """Forward pass for state embedding.
 
         Args:
-            state: Tensor of shape (Batch_Size, 30)
+            state: Tensor of shape (Batch_Size, 34)
 
         Returns:
             State embedding tensor of shape (Batch_Size, output_dim).
@@ -78,7 +78,7 @@ class ConditionEmbedding(nn.Module):
     Outputs condition vector c = state_embedding + time_embedding of shape (Batch_Size, output_dim).
     """
 
-    def __init__(self, state_dim: int = 30, frequency_dim: int = 128, output_dim: int = 256):
+    def __init__(self, state_dim: int = 34, frequency_dim: int = 128, output_dim: int = 256):
         super().__init__()
         self.state_encoder = StateEncoder(state_dim=state_dim, hidden_dim=output_dim, output_dim=output_dim)
         self.time_encoder = SinusoidalPositionalEncoding(frequency_dim=frequency_dim, output_dim=output_dim)
@@ -87,7 +87,7 @@ class ConditionEmbedding(nn.Module):
         """Forward pass combining state and time embeddings.
 
         Args:
-            state: Tensor of shape (Batch_Size, 30)
+            state: Tensor of shape (Batch_Size, 34)
             t: Tensor of shape (Batch_Size,) or (Batch_Size, 1) in range [0, 1]
 
         Returns:
@@ -101,11 +101,11 @@ class ConditionEmbedding(nn.Module):
 
 if __name__ == "__main__":
     # Unit tests and shape verification
-    cond_embedding = ConditionEmbedding(state_dim=30, frequency_dim=128, output_dim=256)
+    cond_embedding = ConditionEmbedding(state_dim=34, frequency_dim=128, output_dim=256)
 
     batch_size = 4
     dummy_t = torch.rand(batch_size, 1)  # Continuous ODE steps in [0, 1]
-    dummy_state = torch.randn(batch_size, 30)  # 30D observation vector
+    dummy_state = torch.randn(batch_size, 34)  # 34D observation vector
 
     condition_emb = cond_embedding(dummy_state, dummy_t)
 

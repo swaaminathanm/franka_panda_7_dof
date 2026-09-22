@@ -6,3 +6,4 @@ opencv-python
 lerobot
 torch
 pyarrow
+tensorboard

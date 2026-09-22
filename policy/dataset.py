@@ -73,8 +73,8 @@ class FrankaLeRobotDataset(Dataset):
         ep = self.episodes[ep_idx]
         ep_len = len(ep["states"])
 
-        # --- 1. Extract Current State (30,) ---
-        state_seq = torch.from_numpy(ep["states"][step])  # (30,)
+        # --- 1. Extract Current State (34,) ---
+        state_seq = torch.from_numpy(ep["states"][step])  # (34,)
 
         # --- 2. Extract Action Target Trajectory with End-Clamping (T_pred, 4) ---
         action_indices = [min(ep_len - 1, step + i) for i in range(self.pred_horizon)]
@@ -93,13 +93,13 @@ class FrankaLeRobotDataset(Dataset):
 
 if __name__ == "__main__":
     # Test dataset loading and shape verification
-    normalizer = LinearNormalizer(state_dim=30, action_dim=4)
-    stats_path = "data/lerobot/meta/stats.json"
+    normalizer = LinearNormalizer(state_dim=34, action_dim=4)
+    stats_path = "data/lerobot_all/meta/stats.json"
     if os.path.exists(stats_path):
         normalizer.load_from_stats_json(stats_path)
 
     dataset = FrankaLeRobotDataset(
-        data_dir="data/lerobot",
+        data_dir="data/lerobot_all",
         pred_horizon=16,
         normalizer=normalizer,
     )
@@ -109,7 +109,7 @@ if __name__ == "__main__":
     print(f"Sample 0 state shape: {sample['state'].shape}")
     print(f"Sample 0 action shape: {sample['action'].shape}")
 
-    assert sample["state"].shape == (30,), f"Expected (30,), got {sample['state'].shape}"
+    assert sample["state"].shape == (34,), f"Expected (34,), got {sample['state'].shape}"
     assert sample["action"].shape == (16, 4), f"Expected (16, 4), got {sample['action'].shape}"
     assert not torch.isnan(sample["state"]).any(), "State contains NaN!"
     assert not torch.isnan(sample["action"]).any(), "Action contains NaN!"
