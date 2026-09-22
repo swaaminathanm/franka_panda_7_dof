@@ -6,7 +6,7 @@ A hybrid Robot Learning pipeline combining **Flow Matching Imitation Learning** 
 
 ## 📹 Demonstration Video
 
-https://github.com/user-attachments/assets/demo.mp4
+![Franka Panda Pick and Place Demo](docs/franka_ppo_eval.mp4)
 
 > **Note:** The robot plans 3D end-effector velocity & gripper actions using an enriched 34-dimensional wall-aware state vector, navigating over a 24 cm partition wall to place the block at table corner goals.
 
