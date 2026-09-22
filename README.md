@@ -6,7 +6,7 @@ A hybrid Robot Learning pipeline combining **Flow Matching Imitation Learning** 
 
 ## 📹 Demonstration Video
 
-<video src="https://raw.githubusercontent.com/swaaminathanm/franka_panda_7_dof/main/docs/franka_ppo_eval.mp4" controls="controls" width="100%">
+<video src="assets/demo.mp4" controls width="100%">
   Your browser does not support the video tag.
 </video>
 
